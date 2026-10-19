@@ -1,0 +1,101 @@
+name: Postman Newman Tests
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      report-generated: ${{ steps.report.outputs.generated }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Newman and HTMLExtra Reporter
+        run: npm install --global newman newman-reporter-htmlextra
+
+      - name: Run Postman collection
+        id: newman
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          newman run API_REST_Servrest.postman_collection.json \
+            --environment API_REST_Servrest.postman_environment.json \
+            --reporters cli,htmlextra \
+            --reporter-htmlextra-export reports/report.html \
+            --reporter-htmlextra-skipSensitiveData
+
+      - name: Check generated report
+        id: report
+        if: always()
+        run: |
+          if [ -s reports/report.html ]; then
+            echo "generated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "generated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always() && steps.report.outputs.generated == 'true'
+        with:
+          name: postman-html-report
+          path: reports/report.html
+
+      - name: Fail workflow when API tests fail
+        if: steps.newman.outcome == 'failure'
+        run: exit 1
+
+  deploy:
+    needs: test
+    if: >-
+      always() &&
+      needs.test.result != 'cancelled' &&
+      needs.test.outputs.report-generated == 'true' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Download test report
+        uses: actions/download-artifact@v4
+        with:
+          name: postman-html-report
+          path: reports
+
+      - name: Prepare Pages content
+        run: |
+          mkdir -p site
+          cp reports/report.html site/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
